@@ -6,13 +6,13 @@ find_package(msquic CONFIG REQUIRED)
 
 add_library(FileClient STATIC
     src/Client.cpp
-    src/Chunk.cpp
     src/Connection.cpp
     src/Error.cpp
-    src/FileInfo.cpp
     src/MsQuic.cpp
     src/PacketSender.cpp
-    src/Transfer.cpp
+    src/FileReader.cpp
+    src/FileTransfer.cpp
+    src/PacketReceiver.cpp
 )
 
 target_compile_features(FileClient PUBLIC cxx_std_17)
