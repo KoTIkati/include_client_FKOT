@@ -23,7 +23,7 @@ void Connection::ReportStatus(const std::string& operation, QUIC_STATUS status) 
 }
 
 bool Connection::Connect(const char* host, std::uint16_t port) {
-    if (std::strlen(host) == 0 || port == 0) {
+    if (host == nullptr || std::strlen(host) == 0 || port == 0) {
         reporter_.Report("[ERROR] Host or port is invalid");
         return false;
     }
@@ -33,6 +33,10 @@ bool Connection::Connect(const char* host, std::uint16_t port) {
     }
     if (!msQuic_.Initialize()) {
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(connectionStateMutex_);
+        connectionState_ = ConnectionState::Connecting;
     }
 
     const QUIC_BUFFER alpn = { (uint32_t)strlen("kot-storage-v1"), (uint8_t*)"kot-storage-v1" };
@@ -53,6 +57,7 @@ bool Connection::Connect(const char* host, std::uint16_t port) {
         msQuic_.registration(), &alpn, 1, &settings, sizeof(settings), this, &configuration_);
     if (QUIC_FAILED(status)) {
         ReportStatus("ConfigurationOpen", status);
+        SetConnectionState(false);
         return false;
     }
     QUIC_CREDENTIAL_CONFIG credentials{};
@@ -63,6 +68,7 @@ bool Connection::Connect(const char* host, std::uint16_t port) {
         ReportStatus("ConfigurationLoadCredential", status);
         msQuic_.api()->ConfigurationClose(configuration_);
         configuration_ = nullptr;
+        SetConnectionState(false);
         return false;
     }
     status = msQuic_.api()->ConnectionOpen(msQuic_.registration(), ConnectionCallback, this, &connection_);
@@ -70,6 +76,7 @@ bool Connection::Connect(const char* host, std::uint16_t port) {
         ReportStatus("ConnectionOpen", status);
         msQuic_.api()->ConfigurationClose(configuration_);
         configuration_ = nullptr;
+        SetConnectionState(false);
         return false;
     }
     status = msQuic_.api()->ConnectionStart(connection_, configuration_, QUIC_ADDRESS_FAMILY_INET,
@@ -80,9 +87,26 @@ bool Connection::Connect(const char* host, std::uint16_t port) {
         connection_ = nullptr;
         msQuic_.api()->ConfigurationClose(configuration_);
         configuration_ = nullptr;
+        SetConnectionState(false);
         return false;
     }
     return true;
+}
+
+bool Connection::WaitForConnection(std::chrono::milliseconds timeout) {
+    if (timeout.count() < 0) {
+        reporter_.Report("[ERROR] Connection wait timeout cannot be negative");
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(connectionStateMutex_);
+    const bool stateChanged = connectionStateChanged_.wait_for(lock, timeout, [this] {
+        return connectionState_ != ConnectionState::Connecting;
+    });
+    if (!stateChanged) {
+        reporter_.Report("[ERROR] Timed out while waiting for a server connection");
+        return false;
+    }
+    return connectionState_ == ConnectionState::Connected;
 }
 
 void Connection::Disconnect() {
@@ -121,6 +145,20 @@ void Connection::Disconnect() {
         configuration_ = nullptr;
     }
     connected_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(connectionStateMutex_);
+        connectionState_ = ConnectionState::Disconnected;
+    }
+    connectionStateChanged_.notify_all();
+}
+
+void Connection::SetConnectionState(bool connected) {
+    connected_.store(connected, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(connectionStateMutex_);
+        connectionState_ = connected ? ConnectionState::Connected : ConnectionState::Failed;
+    }
+    connectionStateChanged_.notify_all();
 }
 
 bool Connection::CreateStream(StreamType type, HQUIC& stream, StreamContext* context) {
@@ -247,14 +285,15 @@ QUIC_STATUS QUIC_API Connection::ConnectionCallback(HQUIC, void* context,
 QUIC_STATUS Connection::HandleConnectionEvent(QUIC_CONNECTION_EVENT* event) {
     switch (event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED: {
-        connected_.store(true, std::memory_order_release);
         if (commandStream_ == nullptr) {
             auto* context = new CommandStreamContext();
             if (!CreateStream(StreamType::COMMAND, commandStream_, context)) {
                 delete context;
+                SetConnectionState(false);
                 return QUIC_STATUS_INTERNAL_ERROR;
             }
         }
+        SetConnectionState(true);
         break;
     }
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
@@ -274,12 +313,14 @@ QUIC_STATUS Connection::HandleConnectionEvent(QUIC_CONNECTION_EVENT* event) {
     }
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         ReportStatus("Connection transport shutdown", event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
+        SetConnectionState(false);
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
         reporter_.Report("[ERROR] Connection shutdown was initiated by peer");
+        SetConnectionState(false);
         break;
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
-        connected_.store(false, std::memory_order_release);
+        SetConnectionState(false);
         commandStream_ = nullptr;
         connection_ = nullptr;
         break;

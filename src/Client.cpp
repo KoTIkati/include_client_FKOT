@@ -21,7 +21,11 @@ Client::~Client() {
 }
 
 bool Client::connect(const char* host, std::uint16_t port) {
-    return connection_.Connect(host, port);
+    return connection_.Connect(host, port) && waitForConnection(std::chrono::seconds(10));
+}
+
+bool Client::waitForConnection(std::chrono::milliseconds timeout) {
+    return connection_.WaitForConnection(timeout);
 }
 
 void Client::disconnect() {
@@ -41,7 +45,7 @@ bool Client::managementStorage(PacketType type, const std::filesystem::path& pat
     return transfer_.ManagementStorage(type, path, name, replacement);
 }
 
-bool Client::initiateFileTransfer(const std::filesystem::path& path) {
+bool Client::initiateFileTransfer(const char* path) {
     return transfer_.InitiateFileTransfer(path);
 }
 

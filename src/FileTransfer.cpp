@@ -113,18 +113,18 @@ bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
                             static_cast<std::uint32_t>(payload.size()));
 }
 
-bool FileTransfer::InitiateFileTransfer(const fs::path& path) {
-    if (!connection_.IsConnected() || connection_.commandStream() == nullptr || path.empty()) {
+bool FileTransfer::InitiateFileTransfer(const char* path) {
+    if (!connection_.IsConnected() || connection_.commandStream() == nullptr || std::strlen(path) == 0) {
         connection_.reporter().Report("[ERROR] Connection or requested path is invalid");
         return false;
     }
-    const std::string value = path.u8string();
-    if (value.size() > MAX_PACKET_SIZE) {
+    size_t pathLen = strlen(path);
+    if (pathLen > MAX_PACKET_SIZE) {
         connection_.reporter().Report("[ERROR] Requested path is too long");
         return false;
     }
     return sender_.SendPacket(connection_.commandStream(), PacketType::COMMAND_REQUEST_FILE,
-                            value.data(), static_cast<std::uint32_t>(value.size()));
+                            path, static_cast<std::uint32_t>(pathLen));
 }
 
 } // namespace FileClient

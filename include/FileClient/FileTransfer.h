@@ -15,8 +15,8 @@ public:
 
     bool SendFileToServer(const fs::path& path, const fs::path& serverPath);
     bool ManagementStorage(PacketType type, const fs::path& path,
-                           const fs::path& name, bool replacement = false);
-    bool InitiateFileTransfer(const fs::path& path);
+                            const fs::path& name, bool replacement = false);
+    bool InitiateFileTransfer(const char* path);
 
 private:
     Connection& connection_;

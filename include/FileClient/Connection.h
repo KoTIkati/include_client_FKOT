@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -32,6 +34,7 @@ public:
     Connection& operator=(const Connection&) = delete;
 
     bool Connect(const char* host, std::uint16_t port);
+    bool WaitForConnection(std::chrono::milliseconds timeout);
     void Disconnect();
     bool IsConnected() const noexcept { return connected_.load(std::memory_order_acquire); }
 
@@ -73,6 +76,14 @@ private:
                                     QUIC_STREAM_EVENT* event);
     void CloseStream(HQUIC stream, StreamContext* context) noexcept;
     void ReportStatus(const std::string& operation, QUIC_STATUS status) const;
+    void SetConnectionState(bool connected);
+
+    enum class ConnectionState {
+        Disconnected,
+        Connecting,
+        Connected,
+        Failed
+    };
 
     MsQuic& msQuic_;
     ErrorReporter& reporter_;
@@ -81,6 +92,9 @@ private:
     HQUIC commandStream_ = nullptr;
     std::atomic_bool connected_{false};
     std::atomic_uint32_t nextRequestId_{1};
+    mutable std::mutex connectionStateMutex_;
+    std::condition_variable connectionStateChanged_;
+    ConnectionState connectionState_ = ConnectionState::Disconnected;
     mutable std::mutex mutex_;
     MessageHandler messageHandler_;
     PacketReceiver* receiver_ = nullptr;

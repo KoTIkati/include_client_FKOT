@@ -25,6 +25,10 @@ public:
 
     bool connect(const char* host, std::uint16_t port);
     bool Connect(const char* host, std::uint16_t port) { return connect(host, port); }
+    bool waitForConnection(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    bool WaitForConnection(std::chrono::milliseconds timeout = std::chrono::seconds(10)) {
+        return waitForConnection(timeout);
+    }
     void disconnect();
     void Disconnect() { disconnect(); }
     bool isConnected() const noexcept;
@@ -38,7 +42,7 @@ public:
     }
     bool managementStorage(PacketType type, const std::filesystem::path& path,
                             const std::filesystem::path& name, bool replacement = false);
-    bool initiateFileTransfer(const std::filesystem::path& path);
+    bool initiateFileTransfer(const char* path);
     bool sendMessage(const std::string& text);
 
     bool SendPacket(HQUIC stream, PacketType type, const void* payload,
@@ -62,3 +66,4 @@ private:
 };
 
 } // namespace FileClient
+#include <chrono>
