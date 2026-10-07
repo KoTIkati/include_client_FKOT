@@ -75,17 +75,6 @@ bool FileTransfer::SendFileToServer(const fs::path& path, const fs::path& server
     return true;
 }
 
-void printHex(const std::string& str) {
-    for (char c : str) {
-        // Приведение к unsigned char обязательно, иначе байты > 127 превратятся в ffffffXX
-        unsigned char uc = static_cast<unsigned char>(c);
-        
-        // Выводим байт в шестнадцатеричном виде с ведущим нулем, если он меньше 16
-        std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(uc) << " ";
-    }
-    std::cout << "\n";
-}
-
 bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
                                     const fs::path& name, bool replacement) {
     if (!connection_.IsConnected() || connection_.commandStream() == nullptr || path.empty() || name.empty()) {
@@ -111,12 +100,6 @@ bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
     }
     info.u8Name = info.Name.u8string();
     info.u8Path = info.Path.u8string();
-
-    printHex(info.u8Path);
-    printHex(info.Path.u8string());
-    std::cout << "[DEBUG] ManagementStorage: Path: " << info.Path << ", Name: " << info.Name << std::endl;
-    printHex(info.u8Name);
-    printHex(info.Name.u8string());
 
     const size_t headerSize = (info.type == FileInfoType::Default) ? sizeof(FileInfoSendData) : sizeof(ManagerFileInfoSendData);
     const size_t payloadSize = headerSize + info.u8Name.size() + info.u8Path.size();
