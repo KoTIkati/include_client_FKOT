@@ -42,7 +42,9 @@ struct FileInfoSendData {
     FileInfoType type;
 };
 
-struct ManagerFileInfoSendData : FileInfoSendData { bool Replacement; };
+struct ManagerFileInfoSendData : FileInfoSendData {
+    bool Replacement; 
+};
 
 struct ChunkFileInfoSendData : FileInfoSendData {
     std::uint64_t FileId;

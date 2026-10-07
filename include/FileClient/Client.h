@@ -42,7 +42,6 @@ public:
     }
     bool managementStorage(PacketType type, const std::filesystem::path& path,
                             const std::filesystem::path& name, bool replacement = false);
-    bool initiateFileTransfer(const char* path);
     bool sendMessage(const std::string& text);
 
     bool SendPacket(HQUIC stream, PacketType type, const void* payload,

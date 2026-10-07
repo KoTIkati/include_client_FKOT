@@ -45,10 +45,6 @@ bool Client::managementStorage(PacketType type, const std::filesystem::path& pat
     return transfer_.ManagementStorage(type, path, name, replacement);
 }
 
-bool Client::initiateFileTransfer(const char* path) {
-    return transfer_.InitiateFileTransfer(path);
-}
-
 bool Client::sendMessage(const std::string& text) {
     return sender_.SendPacket(connection_.commandStream(), PacketType::SEND_MESSAGE,
                                 text.data(), static_cast<std::uint32_t>(text.size()));

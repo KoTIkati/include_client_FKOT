@@ -104,6 +104,13 @@ void PacketReceiver::Receiver(const std::uint8_t* data, std::uint32_t size) {
         buffer_.erase(buffer_.begin(), buffer_.begin() + totalSize);
     }
 }
+std::filesystem::path Utf8ToPath(const std::string& utf8){ //#ff0000 тестовый вариант пока нет тестов на линукс системе 
+    #ifdef _WIN32
+        return std::filesystem::path(utf8);
+    #else
+        return std::filesystem::path(utf8);
+    #endif
+}
 
 bool PacketReceiver::ReceiverPacketToFileInfo(const Packet& packet, FileInfo& fileInfo) const {
     if (packet.payloadSize < sizeof(FileInfoSendData)) {
@@ -155,10 +162,15 @@ bool PacketReceiver::ReceiverPacketToFileInfo(const Packet& packet, FileInfo& fi
     data = packet.payload + metadataSize;
     const std::string name(reinterpret_cast<const char*>(data), nameLength);
     const std::string path(reinterpret_cast<const char*>(data + nameLength), pathLength);
-    fileInfo.Name = fs::u8path(name);
-    fileInfo.Path = fs::u8path(path);
-    fileInfo.u8Name = name;
-    fileInfo.u8Path = path;
+    try {
+        fileInfo.Name = Utf8ToPath(name);
+        fileInfo.Path = Utf8ToPath(path);
+    } catch (const std::exception& e) {
+        Report(std::string("[ERROR] ReceiverPacketToFileInfo: Failed to convert UTF-8 to path. Error: ") + e.what() + "\n");
+        return false;
+    }
+    fileInfo.u8Name = fileInfo.Name.string();
+    fileInfo.u8Path = fileInfo.Path.string();
     return true;
 }
 

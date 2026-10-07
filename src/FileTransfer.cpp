@@ -1,6 +1,7 @@
 #include <FileClient/FileTransfer.h>
 
 #include <cstring>
+#include <iostream>
 
 #include <FileClient/Connection.h>
 #include <FileClient/PacketSender.h>
@@ -74,6 +75,17 @@ bool FileTransfer::SendFileToServer(const fs::path& path, const fs::path& server
     return true;
 }
 
+void printHex(const std::string& str) {
+    for (char c : str) {
+        // Приведение к unsigned char обязательно, иначе байты > 127 превратятся в ffffffXX
+        unsigned char uc = static_cast<unsigned char>(c);
+        
+        // Выводим байт в шестнадцатеричном виде с ведущим нулем, если он меньше 16
+        std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(uc) << " ";
+    }
+    std::cout << "\n";
+}
+
 bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
                                     const fs::path& name, bool replacement) {
     if (!connection_.IsConnected() || connection_.commandStream() == nullptr || path.empty() || name.empty()) {
@@ -86,45 +98,66 @@ bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
     switch (type) {
     case PacketType::MOVE_FILE:
         info.Name = name / path.filename();
+        info.type = FileInfoType::Manager;
         break;
     case PacketType::RENAME:
         info.Name = path.parent_path() / name;
+        info.type = FileInfoType::Manager;
         break;
     default:
         info.Name = path / name;
+        info.type = FileInfoType::Default;
         break;
     }
     info.u8Name = info.Name.u8string();
     info.u8Path = info.Path.u8string();
-    const ManagerFileInfoSendData metadata{
-        {static_cast<std::uint32_t>(info.u8Name.size()), static_cast<std::uint32_t>(info.u8Path.size()),
-        FileInfoType::Manager},
-        replacement};
-    const auto payloadSize = sizeof(metadata) + info.u8Name.size() + info.u8Path.size();
+
+    printHex(info.u8Path);
+    printHex(info.Path.u8string());
+    std::cout << "[DEBUG] ManagementStorage: Path: " << info.Path << ", Name: " << info.Name << std::endl;
+    printHex(info.u8Name);
+    printHex(info.Name.u8string());
+
+    const size_t headerSize = (info.type == FileInfoType::Default) ? sizeof(FileInfoSendData) : sizeof(ManagerFileInfoSendData);
+    const size_t payloadSize = headerSize + info.u8Name.size() + info.u8Path.size();
+
     if (payloadSize > MAX_PACKET_SIZE) {
         connection_.reporter().Report("[ERROR] Storage-management metadata is too large");
         return false;
     }
+    
     std::vector<std::uint8_t> payload(payloadSize);
-    std::memcpy(payload.data(), &metadata, sizeof(metadata));
-    std::memcpy(payload.data() + sizeof(metadata), info.u8Name.data(), info.u8Name.size());
-    std::memcpy(payload.data() + sizeof(metadata) + info.u8Name.size(), info.u8Path.data(), info.u8Path.size());
+    std::uint8_t* writePtr = payload.data();
+
+    if (info.type == FileInfoType::Default) {
+        FileInfoSendData header{
+            static_cast<std::uint32_t>(info.u8Name.size()),
+            static_cast<std::uint32_t>(info.u8Path.size()),
+            info.type
+        };
+        std::memcpy(writePtr, &header, sizeof(header));
+    } else {
+        ManagerFileInfoSendData header{
+            { static_cast<std::uint32_t>(info.u8Name.size()), 
+            static_cast<std::uint32_t>(info.u8Path.size()), 
+            info.type },
+            replacement
+        };
+        std::memcpy(writePtr, &header, sizeof(header));
+    }
+
+    writePtr += headerSize;
+
+    if (!info.u8Name.empty()) {
+        std::memcpy(writePtr, info.u8Name.data(), info.u8Name.size());
+        writePtr += info.u8Name.size();
+    }
+
+    if (!info.u8Path.empty()) {
+        std::memcpy(writePtr, info.u8Path.data(), info.u8Path.size());
+    }
     return sender_.SendPacket(connection_.commandStream(), type, payload.data(),
                             static_cast<std::uint32_t>(payload.size()));
-}
-
-bool FileTransfer::InitiateFileTransfer(const char* path) {
-    if (!connection_.IsConnected() || connection_.commandStream() == nullptr || std::strlen(path) == 0) {
-        connection_.reporter().Report("[ERROR] Connection or requested path is invalid");
-        return false;
-    }
-    size_t pathLen = strlen(path);
-    if (pathLen > MAX_PACKET_SIZE) {
-        connection_.reporter().Report("[ERROR] Requested path is too long");
-        return false;
-    }
-    return sender_.SendPacket(connection_.commandStream(), PacketType::COMMAND_REQUEST_FILE,
-                            path, static_cast<std::uint32_t>(pathLen));
 }
 
 } // namespace FileClient
