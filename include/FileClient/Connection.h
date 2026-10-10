@@ -10,6 +10,18 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <Windows.h>
+#endif
 
 #include <msquic.h>
 
@@ -54,12 +66,18 @@ public:
     void SetDownloadDirectory(const fs::path& directory);
     void SetPacketReceiver(PacketReceiver* receiver) noexcept;
     void SetUploadHandler(UploadHandler handler);
+    std::shared_ptr<UploadTransferState> BeginUpload(std::uint64_t fileId);
+    void FinishUploadRegistration(std::uint64_t fileId,
+                                  const std::shared_ptr<UploadTransferState>& transfer);
+    std::size_t CancelUploadStreams(std::uint64_t fileId);
     void NotifyMessage(const std::string& message) const;
     ErrorReporter& reporter() noexcept { return reporter_; }
     const QUIC_API_TABLE* api() const noexcept { return msQuic_.api(); }
 
     std::unordered_map<HQUIC, StreamContext*> UploadStreams;
     std::unordered_map<HQUIC, StreamContext*> DownloadStreams;
+
+    PacketReceiver* receiver() const noexcept { return receiver_; }
 
 private:
     struct SendContext {
@@ -96,6 +114,8 @@ private:
     std::condition_variable connectionStateChanged_;
     ConnectionState connectionState_ = ConnectionState::Disconnected;
     mutable std::mutex mutex_;
+    mutable std::mutex streamsMutex_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<UploadTransferState>> activeUploadTransfers_;
     MessageHandler messageHandler_;
     PacketReceiver* receiver_ = nullptr;
     UploadHandler uploadHandler_;

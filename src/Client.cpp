@@ -45,6 +45,14 @@ bool Client::managementStorage(PacketType type, const std::filesystem::path& pat
     return transfer_.ManagementStorage(type, path, name, replacement);
 }
 
+bool Client::stopDownloadFile(std::uint64_t fileId){
+    return transfer_.StopDownloadFile(fileId);
+}
+
+bool Client::stopUploadFile(std::uint64_t fileId){
+    return transfer_.StopUploadFile(fileId);
+}
+
 bool Client::sendMessage(const std::string& text) {
     return sender_.SendPacket(connection_.commandStream(), PacketType::SEND_MESSAGE,
                                 text.data(), static_cast<std::uint32_t>(text.size()));

@@ -21,6 +21,20 @@ bool IsSafeRelativePath(const fs::path& path) {
     return true;
 }
 
+std::error_code ReplaceDownloadedFile(const fs::path& temporary, const fs::path& destination) {
+#ifdef _WIN32
+    if (MoveFileExW(temporary.c_str(), destination.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return {};
+    }
+    return {static_cast<int>(GetLastError()), std::system_category()};
+#else
+    std::error_code error;
+    fs::rename(temporary, destination, error);
+    return error;
+#endif
+}
+
 } // namespace
 
 bool FileReceiver::ReceiverChunk(const ChunkFileHeader& chunk, const std::uint8_t* data) {
@@ -52,7 +66,7 @@ bool FileReceiver::ValidFileInfo() const {
 PacketReceiver::PacketReceiver(Connection& connection) : connection_(connection) {}
 
 void PacketReceiver::SetDownloadDirectory(const fs::path& directory) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
     downloadDirectory_ = directory;
 }
 
@@ -81,27 +95,37 @@ void PacketReceiver::Receiver(const std::uint8_t* data, std::uint32_t size) {
     if (data == nullptr || size == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    buffer_.insert(buffer_.end(), data, data + size);
-    while (buffer_.size() >= sizeof(PacketHeader)) {
-        PacketHeader header{};
-        std::memcpy(&header, buffer_.data(), sizeof(header));
-        if (header.Length > MAX_PACKET_SIZE) {
-            Report("[ERROR] Received packet exceeds the protocol limit");
-            buffer_.clear();
-            return;
+    std::vector<ReceivedPacket> packets;
+    bool packetTooLarge = false;
+    {
+        std::lock_guard<std::mutex> lock(receiveMutex_);
+        buffer_.insert(buffer_.end(), data, data + size);
+        while (buffer_.size() >= sizeof(PacketHeader)) {
+            PacketHeader header{};
+            std::memcpy(&header, buffer_.data(), sizeof(header));
+            if (header.Length > MAX_PACKET_SIZE) {
+                buffer_.clear();
+                packetTooLarge = true;
+                break;
+            }
+            const auto totalSize = sizeof(PacketHeader) + static_cast<std::size_t>(header.Length);
+            if (buffer_.size() < totalSize) {
+                break;
+            }
+            ReceivedPacket packet;
+            packet.header = header;
+            packet.payload.assign(buffer_.begin() + sizeof(PacketHeader),
+                                  buffer_.begin() + totalSize);
+            packets.emplace_back(std::move(packet));
+            buffer_.erase(buffer_.begin(), buffer_.begin() + totalSize);
         }
-        const auto totalSize = sizeof(PacketHeader) + static_cast<std::size_t>(header.Length);
-        if (buffer_.size() < totalSize) {
-            return;
-        }
-        Packet packet{header, buffer_.data() + sizeof(PacketHeader), header.Length};
-        if (!ValidPacket(packet)) {
-            buffer_.clear();
-            return;
-        }
-        PacketDispatcher(packet);
-        buffer_.erase(buffer_.begin(), buffer_.begin() + totalSize);
+    }
+    if (packetTooLarge) {
+        Report("[ERROR] Received packet exceeds the protocol limit");
+        return;
+    }
+    for (auto& packet : packets) {
+        PacketDispatcher(std::move(packet));
     }
 }
 std::filesystem::path Utf8ToPath(const std::string& utf8){ //#ff0000 тестовый вариант пока нет тестов на линукс системе 
@@ -199,7 +223,12 @@ bool PacketReceiver::PacketFileInfo(const Packet& packet) {
         Report("[ERROR] Received invalid file metadata");
         return false;
     }
-    const fs::path destination = downloadDirectory_ / info.Path;
+    fs::path downloadDirectory;
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        downloadDirectory = downloadDirectory_;
+    }
+    const fs::path destination = downloadDirectory / info.Path;
     const fs::path temporary = destination.string() + ".download";
     std::error_code error;
     fs::create_directories(destination.parent_path(), error);
@@ -207,21 +236,33 @@ bool PacketReceiver::PacketFileInfo(const Packet& packet) {
         Report("[ERROR] Failed to create destination directory: " + destination.parent_path().string());
         return false;
     }
-    fs::remove(destination, error);
-    if (error && error != std::errc::no_such_file_or_directory) {
-        Report("[ERROR] Failed to replace destination file: " + destination.string());
-        return false;
-    }
     FileReceiver session;
     session.fileInfo = info;
     session.temporaryPath = temporary;
     session.received.resize(info.ChunkCount);
-    session.file.open(session.temporaryPath, std::ios::binary | std::ios::trunc);
-    if (!session.file.is_open()) {
+    bool duplicateSession = false;
+    bool failedToOpen = false;
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        if (sessions_.find(info.FileId) != sessions_.end()) {
+            duplicateSession = true;
+        } else {
+            session.file.open(session.temporaryPath, std::ios::binary | std::ios::trunc);
+            if (!session.file.is_open()) {
+                failedToOpen = true;
+            } else {
+                sessions_.emplace(info.FileId, std::move(session));
+            }
+        }
+    }
+    if (duplicateSession) {
+        Report("[ERROR] Received duplicate metadata for active file transfer: " + std::to_string(info.FileId));
+        return false;
+    }
+    if (failedToOpen) {
         Report("[ERROR] Failed to open temporary file: " + session.temporaryPath.string());
         return false;
     }
-    sessions_.insert_or_assign(info.FileId, std::move(session));
     return true;
 }
 
@@ -232,34 +273,46 @@ bool PacketReceiver::PacketChunk(const Packet& packet) {
         Report("[ERROR] Received invalid file chunk");
         return false;
     }
-    const auto found = sessions_.find(chunk.FileId);
-    if (found == sessions_.end() || !found->second.ReceiverChunk(chunk, data)) {
-        Report("[ERROR] Failed to write file chunk");
+    std::string errorMessage;
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        const auto found = sessions_.find(chunk.FileId);
+        if (found == sessions_.end() || !found->second.ReceiverChunk(chunk, data)) {
+            errorMessage = "[ERROR] Failed to write file chunk";
+        } else {
+            auto& session = found->second;
+            if (session.receivedCount == session.fileInfo.ChunkCount) {
+                session.file.close();
+                const fs::path destination = downloadDirectory_ / session.fileInfo.Path;
+                const std::error_code error =
+                    ReplaceDownloadedFile(session.temporaryPath, destination);
+                if (error) {
+                    errorMessage = "[ERROR] Failed to finalize downloaded file: " + destination.string();
+                } else {
+                    sessions_.erase(found);
+                }
+            }
+        }
+    }
+    if (!errorMessage.empty()) {
+        Report(errorMessage);
         return false;
     }
-    auto& session = found->second;
-    if (session.receivedCount != session.fileInfo.ChunkCount) {
-        return true;
-    }
-    session.file.close();
-    const fs::path destination = downloadDirectory_ / session.fileInfo.Path;
-    std::error_code error;
-    fs::rename(session.temporaryPath, destination, error);
-    if (error) {
-        Report("[ERROR] Failed to finalize downloaded file: " + destination.string());
-        return false;
-    }
-    sessions_.erase(found);
     return true;
 }
 
-void PacketReceiver::PacketDispatcher(const Packet& packet) {
-    switch (packet.header.Type) {
-    case PacketType::FILE_CHUNK:
-        PacketChunk(packet);
-        break;
+void PacketReceiver::PacketDispatcher(ReceivedPacket receivedPacket) {
+    Packet packet{receivedPacket.header, receivedPacket.payload.data(),
+                static_cast<std::uint32_t>(receivedPacket.payload.size())};
+    if (!ValidPacket(packet)) {
+        return;
+    }
+    switch (receivedPacket.header.Type) {
     case PacketType::FILE_INFO:
         PacketFileInfo(packet);
+        break;
+    case PacketType::FILE_CHUNK:
+        PacketChunk(packet);
         break;
     case PacketType::SEND_MESSAGE: {
         std::string message;
@@ -274,12 +327,38 @@ void PacketReceiver::PacketDispatcher(const Packet& packet) {
     }
 }
 
+bool PacketReceiver::CancelDownloadFile(std::uint64_t fileId) {
+    if (fileId == 0) {
+        Report("[ERROR] CancelDownloadFile: Invalid fileId");
+        return false;
+    }
+    std::error_code error;
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        const auto found = sessions_.find(fileId);
+        if (found == sessions_.end()) {
+            return false;
+        }
+        found->second.file.close();
+        fs::remove(found->second.temporaryPath, error);
+        sessions_.erase(found);
+    }
+    if (error && error != std::errc::no_such_file_or_directory) {
+        Report("[ERROR] Failed to remove cancelled download temporary file");
+    }
+    return true;
+}
+
 void PacketReceiver::Finish() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!buffer_.empty()) {
+    bool incompletePacket = false;
+    {
+        std::lock_guard<std::mutex> lock(receiveMutex_);
+        incompletePacket = !buffer_.empty();
+        buffer_.clear();
+    }
+    if (incompletePacket) {
         Report("[ERROR] Stream was closed with an incomplete packet");
     }
-    buffer_.clear();
 }
 
 } // namespace FileClient

@@ -169,16 +169,39 @@ bool Connection::CreateStream(StreamType type, HQUIC& stream, StreamContext* con
     }
     context->Owner = this;
     const auto flags = type == StreamType::DOWNLOAD ? QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL
-                                                     : QUIC_STREAM_OPEN_FLAG_NONE;
+                                                    : QUIC_STREAM_OPEN_FLAG_NONE;
     QUIC_STATUS status = msQuic_.api()->StreamOpen(connection_, flags, StreamCallback, context, &stream);
     if (QUIC_FAILED(status)) {
         ReportStatus("StreamOpen", status);
         stream = nullptr;
         return false;
     }
+    if (type == StreamType::UPLOAD) {
+        std::lock_guard<std::mutex> lock(streamsMutex_);
+        auto* uploadContext = static_cast<UploadStreamContext*>(context);
+        UploadStreams.emplace(stream, uploadContext);
+        if (uploadContext->Transfer != nullptr) {
+            ++uploadContext->Transfer->activeStreams;
+        }
+    }
     status = msQuic_.api()->StreamStart(stream, QUIC_STREAM_START_FLAG_NONE);
     if (QUIC_FAILED(status)) {
         ReportStatus("StreamStart", status);
+        if (type == StreamType::UPLOAD) {
+            std::lock_guard<std::mutex> lock(streamsMutex_);
+            UploadStreams.erase(stream);
+            auto* uploadContext = static_cast<UploadStreamContext*>(context);
+            if (uploadContext->Transfer != nullptr && uploadContext->Transfer->activeStreams > 0) {
+                --uploadContext->Transfer->activeStreams;
+                const auto transfer = activeUploadTransfers_.find(uploadContext->FileInfo.FileId);
+                if (transfer != activeUploadTransfers_.end() &&
+                    transfer->second == uploadContext->Transfer &&
+                    uploadContext->Transfer->registrationComplete &&
+                    uploadContext->Transfer->activeStreams == 0) {
+                    activeUploadTransfers_.erase(transfer);
+                }
+            }
+        }
         msQuic_.api()->StreamClose(stream);
         stream = nullptr;
         return false;
@@ -257,6 +280,49 @@ void Connection::SetUploadHandler(UploadHandler handler) {
     uploadHandler_ = std::move(handler);
 }
 
+std::shared_ptr<UploadTransferState> Connection::BeginUpload(std::uint64_t fileId) {
+    if (fileId == 0) {
+        return {};
+    }
+    auto transfer = std::make_shared<UploadTransferState>();
+    {
+        std::lock_guard<std::mutex> lock(streamsMutex_);
+        if (!activeUploadTransfers_.emplace(fileId, transfer).second) {
+            return {};
+        }
+    }
+    return transfer;
+}
+
+void Connection::FinishUploadRegistration(
+    std::uint64_t fileId, const std::shared_ptr<UploadTransferState>& transfer) {
+    if (transfer == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(streamsMutex_);
+    const auto found = activeUploadTransfers_.find(fileId);
+    if (found == activeUploadTransfers_.end() || found->second != transfer) {
+        return;
+    }
+    transfer->registrationComplete = true;
+    if (transfer->activeStreams == 0) {
+        activeUploadTransfers_.erase(found);
+    }
+}
+
+std::size_t Connection::CancelUploadStreams(std::uint64_t fileId) {
+    if (fileId == 0) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(streamsMutex_);
+    const auto found = activeUploadTransfers_.find(fileId);
+    if (found == activeUploadTransfers_.end()) {
+        return 0;
+    }
+    found->second->cancelled.store(true, std::memory_order_release);
+    return 1;
+}
+
 void Connection::NotifyMessage(const std::string& message) const {
     MessageHandler handler;
     {
@@ -306,7 +372,10 @@ QUIC_STATUS Connection::HandleConnectionEvent(QUIC_CONNECTION_EVENT* event) {
         } else {
             auto* context = new DownloadStreamContext();
             context->Owner = this;
-            DownloadStreams.emplace(stream, context);
+            {
+                std::lock_guard<std::mutex> lock(streamsMutex_);
+                DownloadStreams.emplace(stream, context);
+            }
             msQuic_.api()->SetCallbackHandler(stream, reinterpret_cast<void*>(StreamCallback), context);
         }
         break;
@@ -402,10 +471,24 @@ QUIC_STATUS Connection::HandleStreamEvent(HQUIC stream, StreamContext* context,
 }
 
 void Connection::CloseStream(HQUIC stream, StreamContext* context) noexcept {
-    if (context->type == StreamType::UPLOAD) {
-        UploadStreams.erase(stream);
-    } else if (context->type == StreamType::DOWNLOAD) {
-        DownloadStreams.erase(stream);
+    if (context->type == StreamType::UPLOAD || context->type == StreamType::DOWNLOAD) {
+        std::lock_guard<std::mutex> lock(streamsMutex_);
+        if (context->type == StreamType::UPLOAD) {
+            UploadStreams.erase(stream);
+            auto* uploadContext = static_cast<UploadStreamContext*>(context);
+            if (uploadContext->Transfer != nullptr && uploadContext->Transfer->activeStreams > 0) {
+                --uploadContext->Transfer->activeStreams;
+                const auto transfer = activeUploadTransfers_.find(uploadContext->FileInfo.FileId);
+                if (transfer != activeUploadTransfers_.end() &&
+                    transfer->second == uploadContext->Transfer &&
+                    uploadContext->Transfer->registrationComplete &&
+                    uploadContext->Transfer->activeStreams == 0) {
+                    activeUploadTransfers_.erase(transfer);
+                }
+            }
+        } else {
+            DownloadStreams.erase(stream);
+        }
     } else if (commandStream_ == stream) {
         commandStream_ = nullptr;
     }

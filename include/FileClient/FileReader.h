@@ -12,14 +12,14 @@ class PacketSender;
 class FileReader {
 public:
     ChunkFileInfo ReadFileInfo(const fs::path& path, const fs::path& serverPath,
-                               const fs::path& basePath);
+                                const fs::path& basePath);
     bool ReadFiles(const fs::path& path, std::vector<ChunkFileInfo>& files,
-                   const fs::path& serverPath);
+                    const fs::path& serverPath);
     bool ReadNextChunk(UploadStreamContext& context, ChunkFileHeader& chunk,
-                       std::vector<std::uint8_t>& data) const;
+                    std::vector<std::uint8_t>& data) const;
     bool ReadNextFileChunk(const ChunkFileInfo& fileInfo, ChunkFileHeader& chunk,
-                           std::ifstream& file, std::uint32_t chunkIndex,
-                           std::vector<std::uint8_t>& data) const;
+                        std::ifstream& file, std::uint32_t chunkIndex,
+                        std::vector<std::uint8_t>& data) const;
     bool QueueNextChunk(HQUIC stream, UploadStreamContext& context,
                         PacketSender& sender) const;
     bool QueueNextChunk(HQUIC stream, UploadStreamContext* context,

@@ -102,7 +102,9 @@ bool FileReader::ReadNextFileChunk(const ChunkFileInfo& fileInfo, ChunkFileHeade
 
 bool FileReader::QueueNextChunk(HQUIC stream, UploadStreamContext& context,
                                 PacketSender& sender) const {
-    if (context.ChunkIndex >= context.FileInfo.ChunkCount) {
+    if (context.ChunkIndex >= context.FileInfo.ChunkCount ||
+        (context.Transfer != nullptr &&
+         context.Transfer->cancelled.load(std::memory_order_acquire))) {
         context.Finished = true;
         context.File.close();
         if (context.PendingSendChunk == 0) {

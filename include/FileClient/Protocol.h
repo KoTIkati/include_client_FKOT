@@ -16,7 +16,8 @@ enum class PacketType : std::uint16_t {
     CREATE_DIR = 0x06,
     DELETE_OBJECT = 0x07,
     RENAME = 0x08,
-    MOVE_FILE = 0x09
+    MOVE_FILE = 0x09,
+    STOP_FILE_SEND = 0x10
 };
 
 enum class StreamType { UPLOAD, DOWNLOAD, COMMAND };

@@ -48,6 +48,9 @@ public:
                     std::uint32_t payloadSize, std::uint32_t requestId = 0);
     bool sendPacket(const void* data, std::size_t size);
 
+    bool stopDownloadFile(std::uint64_t fileId);
+    bool stopUploadFile(std::uint64_t fileId);
+
     Connection& getConnection() noexcept { return connection_; }
     const Connection& getConnection() const noexcept { return connection_; }
     void setMessageHandler(MessageHandler handler);

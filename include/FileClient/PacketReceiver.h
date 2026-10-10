@@ -32,22 +32,31 @@ public:
     void Finish();
     void SetDownloadDirectory(const fs::path& directory);
 
+    bool CancelDownloadFile(std::uint64_t fileId);
+
 private:
+    struct ReceivedPacket {
+        PacketHeader header;
+        std::vector<std::uint8_t> payload;
+    };
+
+    void PacketDispatcher(ReceivedPacket packet);
+
     bool ValidPacket(const Packet& packet) const;
     bool ReceiverString(const Packet& packet, std::string& value) const;
     bool ReceiverPacketToFileInfo(const Packet& packet, FileInfo& fileInfo) const;
     bool ReceiverPacketToChunk(const Packet& packet, ChunkFileHeader& chunk,
-                               const std::uint8_t*& data) const;
+                                const std::uint8_t*& data) const;
     bool PacketFileInfo(const Packet& packet);
     bool PacketChunk(const Packet& packet);
-    void PacketDispatcher(const Packet& packet);
     void Report(const std::string& message) const;
 
     Connection& connection_;
     fs::path downloadDirectory_ = ".";
     std::vector<std::uint8_t> buffer_;
     std::unordered_map<std::uint64_t, FileReceiver> sessions_;
-    std::mutex mutex_;
+    std::mutex receiveMutex_;
+    std::mutex sessionsMutex_;
 };
 
 } // namespace FileClient

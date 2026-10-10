@@ -5,6 +5,7 @@
 
 #include <FileClient/Connection.h>
 #include <FileClient/PacketSender.h>
+#include <FileClient/PacketReceiver.h>
 
 namespace FileClient {
 
@@ -48,6 +49,12 @@ bool FileTransfer::SendFileToServer(const fs::path& path, const fs::path& server
             return false;
         }
 
+        auto transfer = connection_.BeginUpload(fileInfo.FileId);
+        if (transfer == nullptr) {
+            connection_.reporter().Report("[ERROR] Failed to register upload cancellation state for file: " +
+                                          fileInfo.ClientPath.string());
+            return false;
+        }
         const std::uint32_t streamCount = fileInfo.Size < 512ULL * 1024ULL * 1024ULL ? 1U :
             fileInfo.Size < 1024ULL * 1024ULL * 1024ULL ? 2U :
             fileInfo.Size < 2ULL * 1024ULL * 1024ULL * 1024ULL ? 3U : 4U;
@@ -55,22 +62,25 @@ bool FileTransfer::SendFileToServer(const fs::path& path, const fs::path& server
             auto* context = new UploadStreamContext();
             context->Owner = &connection_;
             context->FileInfo = fileInfo;
+            context->Transfer = transfer;
             context->ChunkIndex = index;
             context->ChunkStep = streamCount;
             context->File.open(fileInfo.ClientPath, std::ios::binary);
             if (!context->File.is_open()) {
                 connection_.reporter().Report("[ERROR] Failed to open file: " + fileInfo.ClientPath.string());
                 delete context;
+                connection_.FinishUploadRegistration(fileInfo.FileId, transfer);
                 return false;
             }
             HQUIC stream = nullptr;
             if (!connection_.CreateStream(StreamType::UPLOAD, stream, context)) {
                 context->File.close();
                 delete context;
+                connection_.FinishUploadRegistration(fileInfo.FileId, transfer);
                 return false;
             }
-            connection_.UploadStreams.emplace(stream, context);
         }
+        connection_.FinishUploadRegistration(fileInfo.FileId, transfer);
     }
     return true;
 }
@@ -141,6 +151,36 @@ bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
     }
     return sender_.SendPacket(connection_.commandStream(), type, payload.data(),
                             static_cast<std::uint32_t>(payload.size()));
+}
+
+bool FileTransfer::StopDownloadFile(std::uint64_t fileId) {
+    if (connection_.receiver() == nullptr) {
+        connection_.reporter().Report("[ERROR] StopDownloadFile: PacketReceiver is not set");
+        return false;
+    }
+    if (!connection_.receiver()->CancelDownloadFile(fileId)) {
+        connection_.reporter().Report("[ERROR] StopDownloadFile: Failed to cancel download for fileId: " + std::to_string(fileId));
+        return false;
+    }
+    if (!sender_.SendPacket(connection_.commandStream(), PacketType::STOP_FILE_SEND, &fileId,
+                            static_cast<std::uint32_t>(sizeof(fileId)))) {
+        connection_.reporter().Report("[ERROR] StopDownloadFile: Download was cancelled locally, but failed to send STOP_FILE_SEND for fileId: " + std::to_string(fileId));
+        return false;
+    }
+    return true;
+}
+
+bool FileTransfer::StopUploadFile(std::uint64_t fileId) {
+    const std::size_t countCancelled = connection_.CancelUploadStreams(fileId);
+    if (countCancelled == 0){
+        connection_.reporter().Report("[ERROR] StopUploadFile: No streams are sending this file for fileId: " + std::to_string(fileId));
+        return false;
+    }
+    if (!sender_.SendPacket(connection_.commandStream(), PacketType::STOP_FILE_SEND, &fileId, static_cast<std::uint32_t>(sizeof(fileId)))){
+        connection_.reporter().Report("[ERROR] StopUploadFile: Upload cancellation was requested locally, but failed to send STOP_FILE_SEND for fileId: " + std::to_string(fileId));
+        return false;
+    }
+    return true;
 }
 
 } // namespace FileClient

@@ -16,6 +16,9 @@ public:
     bool SendFileToServer(const fs::path& path, const fs::path& serverPath);
     bool ManagementStorage(PacketType type, const fs::path& path,
                             const fs::path& name, bool replacement = false);
+    
+    bool StopDownloadFile(std::uint64_t fileId);
+    bool StopUploadFile(std::uint64_t fileId);
 
 private:
     Connection& connection_;
