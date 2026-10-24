@@ -162,7 +162,7 @@ bool FileTransfer::StopDownloadFile(std::uint64_t fileId) {
         connection_.reporter().Report("[ERROR] StopDownloadFile: Failed to cancel download for fileId: " + std::to_string(fileId));
         return false;
     }
-    if (!sender_.SendPacket(connection_.commandStream(), PacketType::STOP_FILE_SEND, &fileId,
+    if (!sender_.SendPacket(connection_.commandStream(), PacketType::STOP_FILE_UPLOAD, &fileId,
                             static_cast<std::uint32_t>(sizeof(fileId)))) {
         connection_.reporter().Report("[ERROR] StopDownloadFile: Download was cancelled locally, but failed to send STOP_FILE_SEND for fileId: " + std::to_string(fileId));
         return false;
@@ -171,12 +171,11 @@ bool FileTransfer::StopDownloadFile(std::uint64_t fileId) {
 }
 
 bool FileTransfer::StopUploadFile(std::uint64_t fileId) {
-    const std::size_t countCancelled = connection_.CancelUploadStreams(fileId);
-    if (countCancelled == 0){
-        connection_.reporter().Report("[ERROR] StopUploadFile: No streams are sending this file for fileId: " + std::to_string(fileId));
+    if (!connection_.CancelUploadStreams(fileId)){
+        connection_.reporter().Report("[ERROR] StopUploadFile: Failed to cancel upload streams for fileId: " + std::to_string(fileId));
         return false;
     }
-    if (!sender_.SendPacket(connection_.commandStream(), PacketType::STOP_FILE_SEND, &fileId, static_cast<std::uint32_t>(sizeof(fileId)))){
+    if (!sender_.SendPacket(connection_.commandStream(), PacketType::STOP_FILE_DOWNLOAD, &fileId, static_cast<std::uint32_t>(sizeof(fileId)))){
         connection_.reporter().Report("[ERROR] StopUploadFile: Upload cancellation was requested locally, but failed to send STOP_FILE_SEND for fileId: " + std::to_string(fileId));
         return false;
     }

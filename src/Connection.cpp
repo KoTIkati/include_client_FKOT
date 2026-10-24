@@ -280,6 +280,11 @@ void Connection::SetUploadHandler(UploadHandler handler) {
     uploadHandler_ = std::move(handler);
 }
 
+// Вызывается перед созданием потоков в FileTransfer.cpp. 
+// Метод создаёт состояние передачи, помещает его в реестр Connection по fileId и возвращает shared_ptr.
+// С этого момента CancelUploadStreams(fileId) может найти передачу и выставить её общий флаг отмены в Connection.cpp. 
+// Возвращённый указатель присваивается контексту каждого потока.
+
 std::shared_ptr<UploadTransferState> Connection::BeginUpload(std::uint64_t fileId) {
     if (fileId == 0) {
         return {};
@@ -293,6 +298,15 @@ std::shared_ptr<UploadTransferState> Connection::BeginUpload(std::uint64_t fileI
     }
     return transfer;
 }
+// Вызывается после цикла создания потоков или при ошибке в нём — например, 
+// если файл не удалось открыть или поток не удалось создать (FileTransfer.cpp).
+// Метод означает: «для этой передачи новые потоки больше не регистрируются».
+// Он ставит registrationComplete = true. 
+// Если активных потоков уже нет, состояние можно удалить из реестра;
+// если они ещё работают, запись останется до завершения последнего.
+
+// Важно: это состояние само по себе не отменяет уже переданный в StreamSend чанк — оно не даёт поставить следующие чанки в очередь.
+
 
 void Connection::FinishUploadRegistration(
     std::uint64_t fileId, const std::shared_ptr<UploadTransferState>& transfer) {
@@ -310,17 +324,19 @@ void Connection::FinishUploadRegistration(
     }
 }
 
-std::size_t Connection::CancelUploadStreams(std::uint64_t fileId) {
+bool Connection::CancelUploadStreams(std::uint64_t fileId) {
     if (fileId == 0) {
-        return 0;
+        reporter_.Report("[ERROR] CancelUploadStreams: Invalid fileId");
+        return false;
     }
     std::lock_guard<std::mutex> lock(streamsMutex_);
     const auto found = activeUploadTransfers_.find(fileId);
     if (found == activeUploadTransfers_.end()) {
-        return 0;
+        reporter_.Report("[ERROR] CancelUploadStreams: FileId not found");
+        return false;
     }
     found->second->cancelled.store(true, std::memory_order_release);
-    return 1;
+    return true;
 }
 
 void Connection::NotifyMessage(const std::string& message) const {
