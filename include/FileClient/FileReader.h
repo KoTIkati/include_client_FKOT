@@ -18,7 +18,7 @@ public:
     bool ReadNextChunk(UploadStreamContext& context, ChunkFileHeader& chunk,
                     std::vector<std::uint8_t>& data) const;
     bool ReadNextFileChunk(const ChunkFileInfo& fileInfo, ChunkFileHeader& chunk,
-                        std::ifstream& file, std::uint32_t chunkIndex,
+                        std::ifstream& file, std::uint64_t chunkIndex,
                         std::vector<std::uint8_t>& data) const;
     bool QueueNextChunk(HQUIC stream, UploadStreamContext& context,
                         PacketSender& sender) const;

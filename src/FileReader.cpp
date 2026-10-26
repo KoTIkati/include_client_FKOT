@@ -22,7 +22,7 @@ ChunkFileInfo FileReader::ReadFileInfo(const fs::path& path, const fs::path& ser
         return ChunkFileInfo{};
     }
     info.ClientPath = path;
-    info.ChunkSize = info.Size < 1024ULL * 1024ULL * 1024ULL ? 1024U * 1024U : 8U * 1024U * 1024U;
+    info.ChunkSize = info.Size < 1024ULL * 1024ULL * 1024ULL ? 1024ULL * 1024ULL : 8ULL * 1024ULL * 1024ULL;
     info.ChunkCount = static_cast<std::uint32_t>((info.Size + info.ChunkSize - 1) / info.ChunkSize);
     return info;
 }
@@ -75,13 +75,13 @@ bool FileReader::ReadNextChunk(UploadStreamContext& context, ChunkFileHeader& ch
     if (!context.File.is_open() || context.ChunkIndex >= context.FileInfo.ChunkCount) {
         return false;
     }
-    const auto offset = static_cast<std::uint64_t>(context.ChunkIndex) * context.FileInfo.ChunkSize;
+    const std::uint64_t offset = context.ChunkIndex * context.FileInfo.ChunkSize;
     context.File.clear();
     context.File.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
     if (!context.File) {
         return false;
     }
-    data.resize(context.FileInfo.ChunkSize);
+    data.resize(static_cast<std::size_t>(context.FileInfo.ChunkSize));
     context.File.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
     data.resize(static_cast<std::size_t>(context.File.gcount()));
     chunk = {context.FileInfo.FileId, context.ChunkIndex, static_cast<std::uint32_t>(data.size())};
@@ -89,7 +89,7 @@ bool FileReader::ReadNextChunk(UploadStreamContext& context, ChunkFileHeader& ch
 }
 
 bool FileReader::ReadNextFileChunk(const ChunkFileInfo& fileInfo, ChunkFileHeader& chunk,
-                                   std::ifstream& file, std::uint32_t chunkIndex,
+                                   std::ifstream& file, std::uint64_t chunkIndex,
                                    std::vector<std::uint8_t>& data) const {
     UploadStreamContext context;
     context.FileInfo = fileInfo;

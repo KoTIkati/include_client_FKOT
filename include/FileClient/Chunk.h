@@ -34,8 +34,8 @@ struct UploadStreamContext final : StreamContext {
     UploadStreamContext() { type = StreamType::UPLOAD; }
     ChunkFileInfo FileInfo;
     std::ifstream File;
-    std::uint32_t ChunkIndex = 0;
-    std::uint32_t ChunkStep = 1;
+    std::uint64_t ChunkIndex = 0;
+    std::uint64_t ChunkStep = 1;
     std::uint32_t PendingSendChunk = 0;
     bool Finished = false;
     std::shared_ptr<UploadTransferState> Transfer;

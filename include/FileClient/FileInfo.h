@@ -30,7 +30,7 @@ struct ChunkFileInfo : FileInfo {
     ChunkFileInfo() : FileInfo(FileInfoType::Chunk) {}
     std::uint64_t FileId = 0;
     std::uint64_t Size = 0;
-    std::uint32_t ChunkSize = 0;
+    std::uint64_t ChunkSize = 0;
     std::uint32_t ChunkCount = 0;
     fs::path ClientPath;
 };
@@ -49,13 +49,13 @@ struct ManagerFileInfoSendData : FileInfoSendData {
 struct ChunkFileInfoSendData : FileInfoSendData {
     std::uint64_t FileId;
     std::uint64_t Size;
-    std::uint32_t ChunkSize;
+    std::uint64_t ChunkSize;
     std::uint32_t ChunkCount;
 };
 
 struct ChunkFileHeader {
     std::uint64_t FileId;
-    std::uint32_t Index;
+    std::uint64_t Index;
     std::uint32_t Size;
 };
 #pragma pack(pop)

@@ -42,7 +42,7 @@ bool FileReceiver::ReceiverChunk(const ChunkFileHeader& chunk, const std::uint8_
         chunk.Size == 0 || chunk.Size > fileInfo.ChunkSize) {
         return false;
     }
-    const auto offset = static_cast<std::uint64_t>(chunk.Index) * fileInfo.ChunkSize;
+    const std::uint64_t offset = chunk.Index * fileInfo.ChunkSize;
     if (offset > fileInfo.Size || chunk.Size > fileInfo.Size - offset) {
         return false;
     }

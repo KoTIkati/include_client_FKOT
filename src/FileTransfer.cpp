@@ -58,7 +58,7 @@ bool FileTransfer::SendFileToServer(const fs::path& path, const fs::path& server
         const std::uint32_t streamCount = fileInfo.Size < 512ULL * 1024ULL * 1024ULL ? 1U :
             fileInfo.Size < 1024ULL * 1024ULL * 1024ULL ? 2U :
             fileInfo.Size < 2ULL * 1024ULL * 1024ULL * 1024ULL ? 3U : 4U;
-        for (std::uint32_t index = 0; index < streamCount; ++index) {
+        for (std::uint64_t index = 0; index < streamCount; ++index) {
             auto* context = new UploadStreamContext();
             context->Owner = &connection_;
             context->FileInfo = fileInfo;
