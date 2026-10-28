@@ -28,6 +28,12 @@ struct UploadTransferState {
     std::atomic_bool cancelled{false};
     std::size_t activeStreams = 0;
     bool registrationComplete = false;
+    UploadState state = UploadState::Sending; // под streamsMutex_
+
+    // Confirmed и Cancelled удаляют запись. Failed запись сохраняет (в будущем докачка потерянных чанков)
+    bool CanErase() const {
+        return state == UploadState::Confirmed || state == UploadState::Cancelled;
+    }
 };
 
 struct UploadStreamContext final : StreamContext {

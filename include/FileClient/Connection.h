@@ -70,6 +70,7 @@ public:
     void FinishUploadRegistration(std::uint64_t fileId,
                                   const std::shared_ptr<UploadTransferState>& transfer);
     bool CancelUploadStreams(std::uint64_t fileId);
+    bool SetStateUpload(std::uint64_t fileId, UploadState state);
     void NotifyMessage(const std::string& message) const;
     ErrorReporter& reporter() noexcept { return reporter_; }
     const QUIC_API_TABLE* api() const noexcept { return msQuic_.api(); }

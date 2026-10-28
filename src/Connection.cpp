@@ -197,7 +197,8 @@ bool Connection::CreateStream(StreamType type, HQUIC& stream, StreamContext* con
                 if (transfer != activeUploadTransfers_.end() &&
                     transfer->second == uploadContext->Transfer &&
                     uploadContext->Transfer->registrationComplete &&
-                    uploadContext->Transfer->activeStreams == 0) {
+                    uploadContext->Transfer->activeStreams == 0 &&
+                    uploadContext->Transfer->CanErase()) {
                     activeUploadTransfers_.erase(transfer);
                 }
             }
@@ -319,7 +320,7 @@ void Connection::FinishUploadRegistration(
         return;
     }
     transfer->registrationComplete = true;
-    if (transfer->activeStreams == 0) {
+    if (transfer->activeStreams == 0 && transfer->CanErase()) {
         activeUploadTransfers_.erase(found);
     }
 }
@@ -336,6 +337,34 @@ bool Connection::CancelUploadStreams(std::uint64_t fileId) {
         return false;
     }
     found->second->cancelled.store(true, std::memory_order_release);
+    found->second->state = UploadState::Cancelled;
+    if (found->second->registrationComplete && found->second->activeStreams == 0) {
+        activeUploadTransfers_.erase(found);
+    }
+    return true;
+}
+
+// Вызывается при получении FILE_STATE. Cancelled и Failed останавливают отправку чанков.
+// Если все потоки уже закрыты, запись удаляется сразу (только Confirmed/Cancelled),
+// иначе её удалит последний поток в CloseStream.
+bool Connection::SetStateUpload(std::uint64_t fileId, UploadState state) {
+    if (fileId == 0 || state == UploadState::Sending) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(streamsMutex_);
+    const auto found = activeUploadTransfers_.find(fileId);
+    if (found == activeUploadTransfers_.end()) {
+        return false;
+    }
+    found->second->state = state;
+    if (state == UploadState::Cancelled || state == UploadState::Failed) {
+        found->second->cancelled.store(true, std::memory_order_release);
+    }
+    if (found->second->CanErase() &&
+        found->second->registrationComplete &&
+        found->second->activeStreams == 0) {
+        activeUploadTransfers_.erase(found);
+    }
     return true;
 }
 
@@ -498,7 +527,8 @@ void Connection::CloseStream(HQUIC stream, StreamContext* context) noexcept {
                 if (transfer != activeUploadTransfers_.end() &&
                     transfer->second == uploadContext->Transfer &&
                     uploadContext->Transfer->registrationComplete &&
-                    uploadContext->Transfer->activeStreams == 0) {
+                    uploadContext->Transfer->activeStreams == 0 &&
+                    uploadContext->Transfer->CanErase()) {
                     activeUploadTransfers_.erase(transfer);
                 }
             }

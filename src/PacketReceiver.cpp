@@ -91,6 +91,69 @@ bool PacketReceiver::ReceiverString(const Packet& packet, std::string& value) co
     return true;
 }
 
+bool PacketReceiver::ReceiverUploadState(const Packet& packet, std::uint64_t& fileId,
+                                        UploadState& state, TransferDirection& direction) const {
+    if (packet.payload == nullptr || packet.payloadSize != sizeof(UploadStateSendData)) {
+        Report("[ERROR] ReceiverUploadState: Invalid payload");
+        return false;
+    }
+    UploadStateSendData data{};
+    std::memcpy(&data, packet.payload, sizeof(data));
+    // Значение пришло из сети, проверяем что оно входит в enum
+    if (static_cast<std::uint8_t>(data.State) > static_cast<std::uint8_t>(UploadState::Failed)) {
+        Report("[ERROR] ReceiverUploadState: Invalid state " + std::to_string(static_cast<int>(data.State)));
+        return false;
+    }
+    if (static_cast<std::uint8_t>(data.Direction) > static_cast<std::uint8_t>(TransferDirection::ServerToClient)) {
+        Report("[ERROR] ReceiverUploadState: Invalid direction " + std::to_string(static_cast<int>(data.Direction)));
+        return false;
+    }
+    fileId = data.FileId;
+    state = data.State;
+    direction = data.Direction;
+    return true;
+}
+
+bool PacketReceiver::PacketFileState(const Packet& packet) {
+    std::uint64_t fileId = 0;
+    UploadState state{};
+    TransferDirection direction{};
+    if (!ReceiverUploadState(packet, fileId, state, direction) || fileId == 0) {
+        Report("[ERROR] PacketFileState: Invalid fileId");
+        return false;
+    }
+    // ClientToServer: клиент отправляет файл (activeUploadTransfers_)
+    // ServerToClient: клиент принимает файл (sessions_)
+    const bool updated = direction == TransferDirection::ClientToServer
+        ? connection_.SetStateUpload(fileId, state)
+        : SetStateDownload(fileId, state);
+    // Cancelled приходит в ответ на нашу же отмену, запись к этому моменту уже может быть удалена
+    if (!updated && state != UploadState::Cancelled) {
+        Report("[ERROR] PacketFileState: Failed to set state for fileId: " + std::to_string(fileId));
+        return false;
+    }
+    return true;
+}
+
+// Состояние для файла, который клиент принимает от сервера (sessions_).
+// Cancelled: удаляем временный файл и сессию. Failed: закрываем файл, но сохраняем
+// временный файл и сессию с картой received (в будущем докачка потерянных чанков).
+bool PacketReceiver::SetStateDownload(std::uint64_t fileId, UploadState state) {
+    if (state == UploadState::Cancelled) {
+        return CancelDownloadFile(fileId);
+    }
+    if (fileId == 0 || state != UploadState::Failed) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    const auto found = sessions_.find(fileId);
+    if (found == sessions_.end()) {
+        return false;
+    }
+    found->second.file.close();
+    return true;
+}
+
 void PacketReceiver::Receiver(const std::uint8_t* data, std::uint32_t size) {
     if (data == nullptr || size == 0) {
         return;
@@ -274,6 +337,7 @@ bool PacketReceiver::PacketChunk(const Packet& packet) {
         return false;
     }
     std::string errorMessage;
+    bool completed = false;
     {
         std::lock_guard<std::mutex> lock(sessionsMutex_);
         const auto found = sessions_.find(chunk.FileId);
@@ -290,6 +354,7 @@ bool PacketReceiver::PacketChunk(const Packet& packet) {
                     errorMessage = "[ERROR] Failed to finalize downloaded file: " + destination.string();
                 } else {
                     sessions_.erase(found);
+                    completed = true;
                 }
             }
         }
@@ -297,6 +362,14 @@ bool PacketReceiver::PacketChunk(const Packet& packet) {
     if (!errorMessage.empty()) {
         Report(errorMessage);
         return false;
+    }
+    // Отправляем вне sessionsMutex_, чтобы не держать блокировку во время StreamSend
+    if (completed) {
+        const UploadStateSendData stateData{chunk.FileId, UploadState::Confirmed, TransferDirection::ServerToClient};
+        if (!connection_.SendPacketImpl(connection_.commandStream(), PacketType::FILE_STATE,
+                                        &stateData, static_cast<std::uint32_t>(sizeof(stateData)))) {
+            Report("[ERROR] PacketChunk: Failed to send completion state for fileId: " + std::to_string(chunk.FileId));
+        }
     }
     return true;
 }
@@ -321,6 +394,9 @@ void PacketReceiver::PacketDispatcher(ReceivedPacket receivedPacket) {
         }
         break;
     }
+    case PacketType::FILE_STATE:
+        PacketFileState(packet);
+        break;
     default:
         Report("[ERROR] Received unsupported packet type");
         break;

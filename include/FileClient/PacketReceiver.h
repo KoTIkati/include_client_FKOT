@@ -44,6 +44,10 @@ private:
 
     bool ValidPacket(const Packet& packet) const;
     bool ReceiverString(const Packet& packet, std::string& value) const;
+    bool ReceiverUploadState(const Packet& packet, std::uint64_t& fileId, UploadState& state,
+                            TransferDirection& direction) const;
+    bool SetStateDownload(std::uint64_t fileId, UploadState state);
+    bool PacketFileState(const Packet& packet);
     bool ReceiverPacketToFileInfo(const Packet& packet, FileInfo& fileInfo) const;
     bool ReceiverPacketToChunk(const Packet& packet, ChunkFileHeader& chunk,
                                 const std::uint8_t*& data) const;

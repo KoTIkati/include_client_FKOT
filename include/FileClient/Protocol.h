@@ -18,7 +18,23 @@ enum class PacketType : std::uint16_t {
     RENAME = 0x08,
     MOVE_FILE = 0x09,
     STOP_FILE_DOWNLOAD = 0x10,
-    STOP_FILE_UPLOAD = 0x11
+    STOP_FILE_UPLOAD = 0x11,
+    FILE_STATE = 0x12
+};
+
+enum class UploadState : std::uint8_t {
+    Sending,
+    AwaitingConfirm,
+    Confirmed,
+    Cancelled,
+    Failed
+};
+
+// Направление передачи, к которой относится FILE_STATE: кто отправляет данные файла.
+// Не Upload/Download, так как у сервера и клиента эти слова означают противоположное.
+enum class TransferDirection : std::uint8_t {
+    ClientToServer,
+    ServerToClient
 };
 
 enum class StreamType { UPLOAD, DOWNLOAD, COMMAND };
@@ -30,6 +46,13 @@ struct PacketHeader {
     PacketType Type;
     std::uint32_t Length;
     std::uint32_t RequestId;
+};
+
+// Payload FILE_STATE: FileId + UploadState + TransferDirection
+struct UploadStateSendData {
+    std::uint64_t FileId;
+    UploadState State;
+    TransferDirection Direction;
 };
 #pragma pack(pop)
 
