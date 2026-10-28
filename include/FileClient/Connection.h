@@ -64,13 +64,14 @@ public:
 
     void SetMessageHandler(MessageHandler handler);
     void SetDownloadDirectory(const fs::path& directory);
-    void SetPacketReceiver(PacketReceiver* receiver) noexcept;
+    fs::path DownloadDirectory() const;
     void SetUploadHandler(UploadHandler handler);
     std::shared_ptr<UploadTransferState> BeginUpload(std::uint64_t fileId);
     void FinishUploadRegistration(std::uint64_t fileId,
                                   const std::shared_ptr<UploadTransferState>& transfer);
     bool CancelUploadStreams(std::uint64_t fileId);
     bool SetStateUpload(std::uint64_t fileId, UploadState state);
+    bool CancelDownloadFile(std::uint64_t fileId);
     void NotifyMessage(const std::string& message) const;
     ErrorReporter& reporter() noexcept { return reporter_; }
     const QUIC_API_TABLE* api() const noexcept { return msQuic_.api(); }
@@ -78,7 +79,9 @@ public:
     std::unordered_map<HQUIC, StreamContext*> UploadStreams;
     std::unordered_map<HQUIC, StreamContext*> DownloadStreams;
 
-    PacketReceiver* receiver() const noexcept { return receiver_; }
+    // Сессии приёма файлов от сервера, общие для всех потоков соединения
+    std::unordered_map<std::uint64_t, FileReceiver> Sessions;
+    mutable std::mutex sessionsMutex_; // защищает Sessions и downloadDirectory_
 
 private:
     struct SendContext {
@@ -118,8 +121,8 @@ private:
     mutable std::mutex streamsMutex_;
     std::unordered_map<std::uint64_t, std::shared_ptr<UploadTransferState>> activeUploadTransfers_;
     MessageHandler messageHandler_;
-    PacketReceiver* receiver_ = nullptr;
     UploadHandler uploadHandler_;
+    fs::path downloadDirectory_ = ".";
 };
 
 using ClientConnection = Connection;

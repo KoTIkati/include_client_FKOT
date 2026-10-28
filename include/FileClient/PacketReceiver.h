@@ -1,38 +1,24 @@
 #pragma once
 
 #include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <unordered_map>
 #include <vector>
 
+#include <FileClient/Chunk.h>
 #include <FileClient/FileInfo.h>
 
 namespace FileClient {
 
 class Connection;
 
-class FileReceiver {
-public:
-    ChunkFileInfo fileInfo;
-    std::ofstream file;
-    std::vector<bool> received;
-    std::uint32_t receivedCount = 0;
-    fs::path temporaryPath;
-
-    bool ReceiverChunk(const ChunkFileHeader& chunk, const std::uint8_t* data);
-    bool ValidFileInfo() const;
-};
-
+// Один экземпляр на поток (StreamContext::ReceiverManager). Буфер принадлежит потоку и
+// используется только из его колбэка. MsQuic вызывает колбэки одного соединения
+// последовательно, поэтому мьютекс на буфер не нужен. Не трогать buffer_ из других потоков.
 class PacketReceiver {
 public:
     explicit PacketReceiver(Connection& connection);
 
     void Receiver(const std::uint8_t* data, std::uint32_t size);
     void Finish();
-    void SetDownloadDirectory(const fs::path& directory);
-
-    bool CancelDownloadFile(std::uint64_t fileId);
 
 private:
     struct ReceivedPacket {
@@ -56,11 +42,7 @@ private:
     void Report(const std::string& message) const;
 
     Connection& connection_;
-    fs::path downloadDirectory_ = ".";
     std::vector<std::uint8_t> buffer_;
-    std::unordered_map<std::uint64_t, FileReceiver> sessions_;
-    std::mutex receiveMutex_;
-    std::mutex sessionsMutex_;
 };
 
 } // namespace FileClient

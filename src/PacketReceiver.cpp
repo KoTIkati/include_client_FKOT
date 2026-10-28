@@ -63,12 +63,16 @@ bool FileReceiver::ValidFileInfo() const {
            fileInfo.ChunkCount != 0 && !fileInfo.Name.empty() && !fileInfo.Path.empty();
 }
 
-PacketReceiver::PacketReceiver(Connection& connection) : connection_(connection) {}
+StreamContext::StreamContext() = default;
+StreamContext::~StreamContext() = default;
 
-void PacketReceiver::SetDownloadDirectory(const fs::path& directory) {
-    std::lock_guard<std::mutex> lock(sessionsMutex_);
-    downloadDirectory_ = directory;
+void StreamContext::EnableReceiver(Connection& owner) {
+    if (!ReceiverManager) {
+        ReceiverManager = std::make_unique<PacketReceiver>(owner);
+    }
 }
+
+PacketReceiver::PacketReceiver(Connection& connection) : connection_(connection) {}
 
 void PacketReceiver::Report(const std::string& message) const {
     connection_.reporter().Report(message);
@@ -123,7 +127,7 @@ bool PacketReceiver::PacketFileState(const Packet& packet) {
         return false;
     }
     // ClientToServer: клиент отправляет файл (activeUploadTransfers_)
-    // ServerToClient: клиент принимает файл (sessions_)
+    // ServerToClient: клиент принимает файл (Connection::Sessions)
     const bool updated = direction == TransferDirection::ClientToServer
         ? connection_.SetStateUpload(fileId, state)
         : SetStateDownload(fileId, state);
@@ -135,19 +139,19 @@ bool PacketReceiver::PacketFileState(const Packet& packet) {
     return true;
 }
 
-// Состояние для файла, который клиент принимает от сервера (sessions_).
+// Состояние для файла, который клиент принимает от сервера (Connection::Sessions).
 // Cancelled: удаляем временный файл и сессию. Failed: закрываем файл, но сохраняем
 // временный файл и сессию с картой received (в будущем докачка потерянных чанков).
 bool PacketReceiver::SetStateDownload(std::uint64_t fileId, UploadState state) {
     if (state == UploadState::Cancelled) {
-        return CancelDownloadFile(fileId);
+        return connection_.CancelDownloadFile(fileId);
     }
     if (fileId == 0 || state != UploadState::Failed) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(sessionsMutex_);
-    const auto found = sessions_.find(fileId);
-    if (found == sessions_.end()) {
+    std::lock_guard<std::mutex> lock(connection_.sessionsMutex_);
+    const auto found = connection_.Sessions.find(fileId);
+    if (found == connection_.Sessions.end()) {
         return false;
     }
     found->second.file.close();
@@ -161,7 +165,7 @@ void PacketReceiver::Receiver(const std::uint8_t* data, std::uint32_t size) {
     std::vector<ReceivedPacket> packets;
     bool packetTooLarge = false;
     {
-        std::lock_guard<std::mutex> lock(receiveMutex_);
+        // Без мьютекса: buffer_ принадлежит одному потоку, MsQuic не вызывает его колбэк параллельно
         buffer_.insert(buffer_.end(), data, data + size);
         while (buffer_.size() >= sizeof(PacketHeader)) {
             PacketHeader header{};
@@ -286,12 +290,7 @@ bool PacketReceiver::PacketFileInfo(const Packet& packet) {
         Report("[ERROR] Received invalid file metadata");
         return false;
     }
-    fs::path downloadDirectory;
-    {
-        std::lock_guard<std::mutex> lock(sessionsMutex_);
-        downloadDirectory = downloadDirectory_;
-    }
-    const fs::path destination = downloadDirectory / info.Path;
+    const fs::path destination = connection_.DownloadDirectory() / info.Path;
     const fs::path temporary = destination.string() + ".download";
     std::error_code error;
     fs::create_directories(destination.parent_path(), error);
@@ -306,15 +305,15 @@ bool PacketReceiver::PacketFileInfo(const Packet& packet) {
     bool duplicateSession = false;
     bool failedToOpen = false;
     {
-        std::lock_guard<std::mutex> lock(sessionsMutex_);
-        if (sessions_.find(info.FileId) != sessions_.end()) {
+        std::lock_guard<std::mutex> lock(connection_.sessionsMutex_);
+        if (connection_.Sessions.find(info.FileId) != connection_.Sessions.end()) {
             duplicateSession = true;
         } else {
             session.file.open(session.temporaryPath, std::ios::binary | std::ios::trunc);
             if (!session.file.is_open()) {
                 failedToOpen = true;
             } else {
-                sessions_.emplace(info.FileId, std::move(session));
+                connection_.Sessions.emplace(info.FileId, std::move(session));
             }
         }
     }
@@ -338,22 +337,24 @@ bool PacketReceiver::PacketChunk(const Packet& packet) {
     }
     std::string errorMessage;
     bool completed = false;
+    // Берём до sessionsMutex_: DownloadDirectory() сам захватывает этот мьютекс
+    const fs::path downloadDirectory = connection_.DownloadDirectory();
     {
-        std::lock_guard<std::mutex> lock(sessionsMutex_);
-        const auto found = sessions_.find(chunk.FileId);
-        if (found == sessions_.end() || !found->second.ReceiverChunk(chunk, data)) {
+        std::lock_guard<std::mutex> lock(connection_.sessionsMutex_);
+        const auto found = connection_.Sessions.find(chunk.FileId);
+        if (found == connection_.Sessions.end() || !found->second.ReceiverChunk(chunk, data)) {
             errorMessage = "[ERROR] Failed to write file chunk";
         } else {
             auto& session = found->second;
             if (session.receivedCount == session.fileInfo.ChunkCount) {
                 session.file.close();
-                const fs::path destination = downloadDirectory_ / session.fileInfo.Path;
+                const fs::path destination = downloadDirectory / session.fileInfo.Path;
                 const std::error_code error =
                     ReplaceDownloadedFile(session.temporaryPath, destination);
                 if (error) {
                     errorMessage = "[ERROR] Failed to finalize downloaded file: " + destination.string();
                 } else {
-                    sessions_.erase(found);
+                    connection_.Sessions.erase(found);
                     completed = true;
                 }
             }
@@ -403,35 +404,9 @@ void PacketReceiver::PacketDispatcher(ReceivedPacket receivedPacket) {
     }
 }
 
-bool PacketReceiver::CancelDownloadFile(std::uint64_t fileId) {
-    if (fileId == 0) {
-        Report("[ERROR] CancelDownloadFile: Invalid fileId");
-        return false;
-    }
-    std::error_code error;
-    {
-        std::lock_guard<std::mutex> lock(sessionsMutex_);
-        const auto found = sessions_.find(fileId);
-        if (found == sessions_.end()) {
-            return false;
-        }
-        found->second.file.close();
-        fs::remove(found->second.temporaryPath, error);
-        sessions_.erase(found);
-    }
-    if (error && error != std::errc::no_such_file_or_directory) {
-        Report("[ERROR] Failed to remove cancelled download temporary file");
-    }
-    return true;
-}
-
 void PacketReceiver::Finish() {
-    bool incompletePacket = false;
-    {
-        std::lock_guard<std::mutex> lock(receiveMutex_);
-        incompletePacket = !buffer_.empty();
-        buffer_.clear();
-    }
+    const bool incompletePacket = !buffer_.empty();
+    buffer_.clear();
     if (incompletePacket) {
         Report("[ERROR] Stream was closed with an incomplete packet");
     }

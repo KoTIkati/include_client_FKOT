@@ -154,11 +154,7 @@ bool FileTransfer::ManagementStorage(PacketType type, const fs::path& path,
 }
 
 bool FileTransfer::StopDownloadFile(std::uint64_t fileId) {
-    if (connection_.receiver() == nullptr) {
-        connection_.reporter().Report("[ERROR] StopDownloadFile: PacketReceiver is not set");
-        return false;
-    }
-    if (!connection_.receiver()->CancelDownloadFile(fileId)) {
+    if (!connection_.CancelDownloadFile(fileId)) {
         connection_.reporter().Report("[ERROR] StopDownloadFile: Failed to cancel download for fileId: " + std::to_string(fileId));
         return false;
     }

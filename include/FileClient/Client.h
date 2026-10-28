@@ -64,7 +64,6 @@ private:
     PacketSender sender_;
     FileReader reader_;
     FileTransfer transfer_;
-    PacketReceiver receiver_;
 };
 
 } // namespace FileClient

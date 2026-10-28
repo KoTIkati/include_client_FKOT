@@ -6,16 +6,13 @@ Client::Client()
     : msQuic_(reporter_),
     connection_(msQuic_, reporter_),
     sender_(connection_),
-    transfer_(connection_, reader_, sender_),
-    receiver_(connection_) {
-    connection_.SetPacketReceiver(&receiver_);
+    transfer_(connection_, reader_, sender_) {
     connection_.SetUploadHandler([this](HQUIC stream, UploadStreamContext& context) {
         return reader_.QueueNextChunk(stream, context, sender_);
     });
 }
 
 Client::~Client() {
-    connection_.SetPacketReceiver(nullptr);
     connection_.SetUploadHandler({});
     disconnect();
 }

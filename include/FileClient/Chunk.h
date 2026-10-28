@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <vector>
 
 #include <msquic.h>
 
@@ -13,11 +14,32 @@
 namespace FileClient {
 
 class Connection;
+class PacketReceiver;
+
+// Сессия приёма файла от сервера. Живёт в Connection::Sessions, так как FILE_INFO
+// приходит по command stream, а чанки по другим потокам.
+class FileReceiver {
+public:
+    ChunkFileInfo fileInfo;
+    std::ofstream file;
+    std::vector<bool> received;
+    std::uint32_t receivedCount = 0;
+    fs::path temporaryPath;
+
+    bool ReceiverChunk(const ChunkFileHeader& chunk, const std::uint8_t* data);
+    bool ValidFileInfo() const;
+};
 
 struct StreamContext {
     Connection* Owner = nullptr;
     StreamType type = StreamType::COMMAND;
-    virtual ~StreamContext() = default;
+    // Свой приёмник на каждый поток: байты разных потоков не смешиваются в одном буфере
+    std::unique_ptr<PacketReceiver> ReceiverManager;
+
+    // Определены в PacketReceiver.cpp, так как здесь PacketReceiver неполный тип
+    StreamContext();
+    virtual ~StreamContext();
+    void EnableReceiver(Connection& owner);
 };
 
 struct CommandStreamContext final : StreamContext {

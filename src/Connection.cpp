@@ -267,13 +267,36 @@ void Connection::SetMessageHandler(MessageHandler handler) {
 }
 
 void Connection::SetDownloadDirectory(const fs::path& directory) {
-    if (receiver_ != nullptr) {
-        receiver_->SetDownloadDirectory(directory);
-    }
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    downloadDirectory_ = directory;
 }
 
-void Connection::SetPacketReceiver(PacketReceiver* receiver) noexcept {
-    receiver_ = receiver;
+// Берёт sessionsMutex_, поэтому нельзя вызывать под уже взятым sessionsMutex_
+fs::path Connection::DownloadDirectory() const {
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    return downloadDirectory_;
+}
+
+bool Connection::CancelDownloadFile(std::uint64_t fileId) {
+    if (fileId == 0) {
+        reporter_.Report("[ERROR] CancelDownloadFile: Invalid fileId");
+        return false;
+    }
+    std::error_code error;
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        const auto found = Sessions.find(fileId);
+        if (found == Sessions.end()) {
+            return false;
+        }
+        found->second.file.close();
+        fs::remove(found->second.temporaryPath, error);
+        Sessions.erase(found);
+    }
+    if (error && error != std::errc::no_such_file_or_directory) {
+        reporter_.Report("[ERROR] Failed to remove cancelled download temporary file");
+    }
+    return true;
 }
 
 void Connection::SetUploadHandler(UploadHandler handler) {
@@ -398,6 +421,7 @@ QUIC_STATUS Connection::HandleConnectionEvent(QUIC_CONNECTION_EVENT* event) {
     case QUIC_CONNECTION_EVENT_CONNECTED: {
         if (commandStream_ == nullptr) {
             auto* context = new CommandStreamContext();
+            context->EnableReceiver(*this);
             if (!CreateStream(StreamType::COMMAND, commandStream_, context)) {
                 delete context;
                 SetConnectionState(false);
@@ -412,11 +436,13 @@ QUIC_STATUS Connection::HandleConnectionEvent(QUIC_CONNECTION_EVENT* event) {
         if (commandStream_ == nullptr) {
             auto* context = new CommandStreamContext();
             context->Owner = this;
+            context->EnableReceiver(*this);
             commandStream_ = stream;
             msQuic_.api()->SetCallbackHandler(stream, reinterpret_cast<void*>(StreamCallback), context);
         } else {
             auto* context = new DownloadStreamContext();
             context->Owner = this;
+            context->EnableReceiver(*this);
             {
                 std::lock_guard<std::mutex> lock(streamsMutex_);
                 DownloadStreams.emplace(stream, context);
@@ -475,10 +501,11 @@ QUIC_STATUS Connection::HandleStreamEvent(HQUIC stream, StreamContext* context,
         }
         break;
     case QUIC_STREAM_EVENT_RECEIVE:
-        if (receiver_ != nullptr) {
+        // У каждого потока свой приёмник, байты разных потоков не смешиваются
+        if (context->ReceiverManager) {
             for (std::uint32_t index = 0; index < event->RECEIVE.BufferCount; ++index) {
                 const auto& buffer = event->RECEIVE.Buffers[index];
-                receiver_->Receiver(buffer.Buffer, buffer.Length);
+                context->ReceiverManager->Receiver(buffer.Buffer, buffer.Length);
             }
         }
         // msQuic_.api()->StreamReceiveComplete(stream, event->RECEIVE.TotalBufferLength);
@@ -502,8 +529,8 @@ QUIC_STATUS Connection::HandleStreamEvent(HQUIC stream, StreamContext* context,
         }
         break;
     case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
-        if (receiver_ != nullptr) {
-            receiver_->Finish();
+        if (context->ReceiverManager) {
+            context->ReceiverManager->Finish();
         }
         break;
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
